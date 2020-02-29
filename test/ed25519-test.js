@@ -2,9 +2,11 @@
 
 var assert = require('assert');
 var elliptic = require('../');
+var rand = elliptic.rand;
 var utils = elliptic.utils;
 var toArray = elliptic.utils.toArray;
 var eddsa = elliptic.eddsa;
+var BN = require('bn.js');
 
 function toHex(arr) {
   return elliptic.utils.toHex(arr).toUpperCase();
@@ -133,5 +135,79 @@ describe('EDDSA(\'ed25519\')', function() {
       assert.equal(pair.getPublic('hex'),
         '3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29');
     });
+  });
+});
+
+describe('EDDSA(\'ed25519\') blind signature', function() {
+  var ed25519;
+
+  before(function() {
+    ed25519 = new eddsa('ed25519');
+  });
+
+  function randomscalar() {
+    return new BN(rand(32).toString('hex'), 16)
+  }
+
+  class SignerSession {
+    constructor(keypair) {
+      this.x = keypair.priv();
+      this.P = keypair.pub();
+      this.k = randomscalar();
+      this.R = ed25519.g.mul(this.k);
+    }
+    publicKey() {
+      return this.P;
+    }
+    publicNonce() {
+      return this.R;
+    }
+    sign(challenge) {
+      return this.x
+        .mul(challenge)
+        .add(this.k)
+        .umod(ed25519.curve.n);
+    }
+  }
+
+  class UserSession {
+    constructor(P, R) {
+      this.a = randomscalar();
+      this.b = randomscalar();
+      this.P = P;
+      this.R = R.add(ed25519.g.mul(this.a).add(this.P.mul(this.b)));
+    }
+    challenge(message) {
+      return ed25519
+        .hashInt(
+          ed25519.encodePoint(this.R),
+          ed25519.encodePoint(this.P),
+          message
+        )
+        .add(this.b)
+        .umod(ed25519.curve.n);
+    }
+    signature(s) {
+      const S = s.add(this.a).umod(ed25519.curve.n);
+      return ed25519.makeSignature({ R: this.R, S });
+    }
+  }
+
+  it('can blind sign/verify messages', function() {
+    const secret = elliptic.rand(32);
+    assert(secret.length === 32);
+    var msg = Buffer.from('private message');
+    var key = ed25519.keyFromSecret(secret);
+
+    const signer = new SignerSession(key);
+    const user = new UserSession(signer.publicKey(), signer.publicNonce());
+
+    const e = user.challenge(msg);
+    const s = signer.sign(e);
+    const sign = user.signature(s);
+
+    var signHex = sign.toHex();
+
+    assert(key.verify(msg, signHex));
   });
 });
